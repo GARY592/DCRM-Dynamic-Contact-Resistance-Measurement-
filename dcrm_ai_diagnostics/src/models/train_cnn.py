@@ -35,6 +35,9 @@ class DCRM1DCNN(nn.Module):
     def __init__(self, input_length, num_classes=3):
         super(DCRM1DCNN, self).__init__()
         
+        # Activation available early for probing
+        self.relu = nn.ReLU()
+
         # Convolutional layers
         self.conv1 = nn.Conv1d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
@@ -55,8 +58,7 @@ class DCRM1DCNN(nn.Module):
         self.fc2 = nn.Linear(256, 128)
         self.fc3 = nn.Linear(128, num_classes)
         
-        # Activation
-        self.relu = nn.ReLU()
+        # Activation defined above
     
     def _get_conv_output_size(self, input_length):
         """Calculate the output size after convolutions and pooling."""
@@ -106,8 +108,20 @@ def prepare_cnn_data(features_csv_path: Path, raw_data_dir: Path):
     y = []
     
     for _, row in features_df.iterrows():
-        file_name = row['file']
-        label = row['label']
+        file_name = row['file'] if 'file' in row else None
+        # Derive label if missing: healthy_* -> 0, faulty_* -> 1, else 0
+        if 'label' in row.index:
+            label = row['label']
+        else:
+            if isinstance(file_name, str):
+                if file_name.lower().startswith('healthy_'):
+                    label = 0
+                elif file_name.lower().startswith('faulty_'):
+                    label = 1
+                else:
+                    label = 0
+            else:
+                label = 0
         
         # Load corresponding raw data
         raw_file = raw_data_dir / file_name

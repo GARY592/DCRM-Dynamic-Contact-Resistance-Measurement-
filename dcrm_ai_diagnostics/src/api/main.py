@@ -1,14 +1,19 @@
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+from typing import Optional
+import os
 
 from dcrm_ai_diagnostics.src.models.infer import predict_from_csv_bytes, load_model, load_iforest, predict_with_anomaly_from_df
+from dcrm_ai_diagnostics.src.utils.batch_processor import process_zip_file
+from dcrm_ai_diagnostics.src.utils.database import get_analysis_history
 import pandas as pd
 import io
 
 
 app = FastAPI(title="DCRM Inference API", version="0.1.0")
 _model = None
+_iforest = None
 
 
 @app.on_event("startup")
@@ -58,4 +63,24 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+@app.post("/batch-predict")
+async def batch_predict(zip_file: UploadFile = File(...)):
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded. Train the model first.")
+    try:
+        zip_bytes = await zip_file.read()
+        results = process_zip_file(zip_bytes)
+        return JSONResponse(results)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/history")
+def history(limit: Optional[int] = 50):
+    try:
+        records = get_analysis_history(limit or 50)
+        return JSONResponse(records)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 

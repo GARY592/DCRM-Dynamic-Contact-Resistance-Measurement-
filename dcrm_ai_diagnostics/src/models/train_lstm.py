@@ -27,9 +27,13 @@ class DCRMLSTMDataset(Dataset):
         return len(self.data) - self.sequence_length + 1
     
     def __getitem__(self, idx):
-        sequence = self.data[idx:idx + self.sequence_length]
-        label = self.labels[idx + self.sequence_length - 1]  # Use last label in sequence
-        return torch.FloatTensor(sequence), torch.LongTensor([label])
+        # self.data is expected to be shaped (num_sequences, sequence_length) after prepare step
+        # When prepared, we will pass sequences directly instead of slicing here
+        sequence = self.data[idx]
+        label = self.labels[idx]
+        # Return shape (sequence_length, 1) for single feature
+        sequence = torch.FloatTensor(sequence).view(-1, 1)
+        return sequence, torch.LongTensor([label])
 
 
 class DCRMLSTM(nn.Module):
@@ -98,8 +102,20 @@ def prepare_lstm_data(features_csv_path: Path, raw_data_dir: Path, sequence_leng
     y = []
     
     for _, row in features_df.iterrows():
-        file_name = row['file']
-        label = row['label']
+        file_name = row['file'] if 'file' in row else None
+        # Derive label if missing: healthy_* -> 0, faulty_* -> 1, else 0
+        if 'label' in row.index:
+            label = row['label']
+        else:
+            if isinstance(file_name, str):
+                if file_name.lower().startswith('healthy_'):
+                    label = 0
+                elif file_name.lower().startswith('faulty_'):
+                    label = 1
+                else:
+                    label = 0
+            else:
+                label = 0
         
         # Load corresponding raw data
         raw_file = raw_data_dir / file_name
@@ -108,21 +124,19 @@ def prepare_lstm_data(features_csv_path: Path, raw_data_dir: Path, sequence_leng
             
             # Use resistance column as time series
             if 'resistance' in raw_df.columns:
-                # Normalize the signal
                 signal = raw_df['resistance'].values
                 signal = (signal - signal.mean()) / (signal.std() + 1e-8)
-                
-                # Create sequences
-                if len(signal) >= sequence_length:
-                    for i in range(len(signal) - sequence_length + 1):
-                        sequence = signal[i:i + sequence_length]
-                        X.append(sequence)
-                        y.append(label)
-                else:
-                    # Pad short sequences
-                    padded_signal = np.pad(signal, (0, sequence_length - len(signal)), mode='constant')
-                    X.append(padded_signal)
+                # Always create non-overlapping sequences to avoid massive 4D shapes
+                if len(signal) < sequence_length:
+                    seq = np.pad(signal, (0, sequence_length - len(signal)), mode='constant')
+                    X.append(seq)
                     y.append(label)
+                else:
+                    for i in range(0, len(signal) - sequence_length + 1, sequence_length):
+                        seq = signal[i:i + sequence_length]
+                        if len(seq) == sequence_length:
+                            X.append(seq)
+                            y.append(label)
     
     return np.array(X), np.array(y)
 
@@ -150,8 +164,8 @@ def train_lstm_model():
     
     print(f"Loaded {len(X)} sequences for LSTM training")
     
-    # Reshape for LSTM: (samples, sequence_length, features)
-    X = X.reshape(X.shape[0], sequence_length, 1)
+    # Reshape for LSTM: (samples, sequence_length) -> dataset returns (seq_len, 1)
+    X = X.reshape(X.shape[0], sequence_length)
     
     # Split data
     if len(X) < 2:

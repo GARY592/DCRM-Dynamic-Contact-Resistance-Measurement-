@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+import os
 
 import joblib
 import numpy as np
@@ -11,11 +12,15 @@ import shap
 from dcrm_ai_diagnostics.src.utils.component_mapping import get_component_insights, get_maintenance_recommendations, get_health_score
 from dcrm_ai_diagnostics.src.utils.database import log_analysis
 from dcrm_ai_diagnostics.src.utils.rul_estimator import estimate_rul_from_analysis
+import torch
+from dcrm_ai_diagnostics.src.models.train_autoencoder import DCRMAutoencoder
 
 
 PROJECT_ROOT = Path("dcrm_ai_diagnostics")
 MODEL_PATH = PROJECT_ROOT / "models" / "rf_model.pkl"
 IFOREST_PATH = PROJECT_ROOT / "models" / "iforest.pkl"
+AE_MODEL_PATH = PROJECT_ROOT / "models" / "autoencoder_model.pkl"
+AE_SCALER_PATH = PROJECT_ROOT / "models" / "autoencoder_scaler.pkl"
 
 
 def smooth_signal(values: np.ndarray, window: int = 31, poly: int = 3) -> np.ndarray:
@@ -77,6 +82,19 @@ def load_iforest() -> Optional[any]:
     return None
 
 
+def load_autoencoder() -> Tuple[Optional[Any], Optional[Any]]:
+    """Load autoencoder model and scaler if available."""
+    try:
+        if AE_MODEL_PATH.exists() and AE_SCALER_PATH.exists():
+            scaler = joblib.load(AE_SCALER_PATH)
+            # Infer input size from scaler/feats dimension at runtime
+            # We'll instantiate with a safe default and adjust at use time if needed
+            return ("placeholder", scaler)
+    except Exception:
+        pass
+    return (None, None)
+
+
 def predict_from_df(df: pd.DataFrame, model=None) -> Tuple[int, Optional[np.ndarray]]:
     df = ensure_smoothed(df)
     feats = extract_features_from_df(df)
@@ -93,6 +111,8 @@ def predict_with_anomaly_from_df(df: pd.DataFrame, model=None, iforest=None):
     feats = extract_features_from_df(df)
     model = model or load_model()
     iforest = iforest if iforest is not None else load_iforest()
+    use_autoencoder = os.environ.get("USE_AUTOENCODER", "false").lower() == "true"
+    use_iforest = os.environ.get("USE_IFOREST", "true").lower() == "true"
 
     proba = None
     if hasattr(model, "predict_proba"):
@@ -101,11 +121,34 @@ def predict_with_anomaly_from_df(df: pd.DataFrame, model=None, iforest=None):
 
     anomaly = None
     anomaly_score = None
-    if iforest is not None:
-        # IsolationForest: score_samples -> higher score = more normal
+    # IsolationForest anomaly
+    if use_iforest and iforest is not None:
         anomaly_score = float(iforest.score_samples(feats.values)[0])
-        is_inlier = int(iforest.predict(feats.values)[0])  # 1 inlier, -1 outlier
+        is_inlier = int(iforest.predict(feats.values)[0])
         anomaly = (is_inlier == -1)
+
+    # Autoencoder anomaly (reconstruction error on engineered features)
+    ae_score = None
+    if use_autoencoder and AE_MODEL_PATH.exists() and AE_SCALER_PATH.exists():
+        try:
+            scaler = joblib.load(AE_SCALER_PATH)
+            X = scaler.transform(feats.values)
+            input_size = X.shape[1]
+            model_ae = DCRMAutoencoder(input_size=input_size, encoding_dim=min(32, input_size // 2))
+            state_dict = torch.load(AE_MODEL_PATH, map_location="cpu")
+            model_ae.load_state_dict(state_dict)
+            model_ae.eval()
+            with torch.no_grad():
+                x_tensor = torch.FloatTensor(X)
+                recon = model_ae(x_tensor)
+                mse = torch.mean((x_tensor - recon) ** 2, dim=1)
+                ae_score = float(mse.numpy()[0])
+            # Simple threshold; can be tuned via env
+            ae_thresh = float(os.environ.get("AE_ANOMALY_THRESHOLD", "0.01"))
+            ae_is_anom = ae_score > ae_thresh
+            anomaly = bool(anomaly or ae_is_anom) if anomaly is not None else ae_is_anom
+        except Exception:
+            ae_score = None
 
     # SHAP explanation (best effort)
     top_features = None
@@ -138,6 +181,7 @@ def predict_with_anomaly_from_df(df: pd.DataFrame, model=None, iforest=None):
         "probabilities": proba,
         "anomaly": anomaly,
         "anomaly_score": anomaly_score,
+        "ae_score": ae_score,
         "top_features": top_features,
         "component_insights": component_insights,
         "maintenance_recommendations": maintenance_recommendations,

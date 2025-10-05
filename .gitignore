@@ -1,0 +1,23 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# Data & artifacts
+dcrm_ai_diagnostics/data/**/*.csv
+!dcrm_ai_diagnostics/data/processed/sample_dcrm.csv
+dcrm_ai_diagnostics/data/analysis_history.db
+dcrm_ai_diagnostics/models/*.pkl
+dcrm_ai_diagnostics/reports/*.pdf
+dcrm_ai_diagnostics/reports/*.png
+
+# Jupyter
+.ipynb_checkpoints/
+
+
