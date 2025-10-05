@@ -1,11 +1,21 @@
 import io
 from pathlib import Path
+import sys
+import os
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
+
+# Ensure project root is on sys.path so 'dcrm_ai_diagnostics' package resolves
+THIS_FILE = Path(__file__).resolve()
+# app.py is .../SIH25189/dcrm_ai_diagnostics/src/dashboard/app.py
+# We need the repo root (SIH25189) on sys.path → parents[4]
+REPO_ROOT = THIS_FILE.parents[4]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from dcrm_ai_diagnostics.src.models.infer import predict_from_df, ensure_smoothed, predict_with_anomaly_from_df, load_iforest
 from dcrm_ai_diagnostics.src.utils.report import generate_pdf_report

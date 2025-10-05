@@ -12,7 +12,7 @@ COPY . /app
 
 # Default environment flags
 ENV USE_IFOREST=true \
-    USE_AUTOENCODER=false
+    USE_AUTOENCODER=true
 
 EXPOSE 8000
 
